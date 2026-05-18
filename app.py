@@ -114,6 +114,8 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
         raise ValueError("overlap 必须小于 chunk_size")
 
     step = chunk_size - overlap
+    if step <= 0:
+        raise ValueError("overlap 必须小于 chunk_size")
     chunks: list[str] = []
     for start in range(0, len(text), step):
         chunk = text[start : start + chunk_size].strip()
@@ -172,9 +174,7 @@ def query(request: QueryRequest) -> QueryResponse:
     context = "\n\n".join(documents)
     prompt = RAG_PROMPT.format(context=context, question=request.query)
 
-    retrieved_content = (
-        f"相关内容：{' '.join(documents)}" if documents else "未找到相关内容"
-    )
+    retrieved_content = f"相关内容：{context}" if context else "未找到相关内容"
 
     return QueryResponse(
         retrieved_content=retrieved_content,
