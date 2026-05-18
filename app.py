@@ -8,7 +8,7 @@ import os
 
 import chromadb
 from chromadb.utils import embedding_functions
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="Personal Knowledge Assistant")
@@ -56,20 +56,18 @@ def build_embedding_function(
     )
 
 
-_client = None
-_collection = None
+@app.on_event("startup")
+def startup() -> None:
+    app.state.client = chromadb.PersistentClient(path=CHROMA_PATH)
+    app.state.collection = app.state.client.get_or_create_collection(
+        name=COLLECTION_NAME,
+        embedding_function=build_embedding_function(),
+        metadata={"hnsw:space": "cosine"},
+    )
 
 
-def get_collection():
-    global _client, _collection
-    if _collection is None:
-        _client = chromadb.PersistentClient(path=CHROMA_PATH)
-        _collection = _client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            embedding_function=build_embedding_function(),
-            metadata={"hnsw:space": "cosine"},
-        )
-    return _collection
+def get_collection(request: Request):
+    return request.app.state.collection
 
 
 class IngestResponse(BaseModel):
@@ -102,7 +100,7 @@ def load_documents(path: Path = DOCUMENTS_ROOT) -> list[dict]:
 
     documents: list[dict] = []
     for file_path in _iter_files(path):
-        content = file_path.read_text(encoding="utf-8", errors="ignore").strip()
+        content = file_path.read_text(encoding="utf-8", errors="replace").strip()
         if content:
             documents.append({"content": content, "source": str(file_path)})
 
@@ -145,11 +143,10 @@ def chunk_documents(documents: list[dict]) -> list[dict]:
 
 
 @app.post("/ingest", response_model=IngestResponse)
-def ingest() -> IngestResponse:
+def ingest(collection=Depends(get_collection)) -> IngestResponse:
     try:
         documents = load_documents()
         chunked = chunk_documents(documents)
-        collection = get_collection()
         collection.add(
             ids=[chunk["id"] for chunk in chunked],
             documents=[chunk["content"] for chunk in chunked],
@@ -165,8 +162,7 @@ def ingest() -> IngestResponse:
 
 
 @app.post("/query", response_model=QueryResponse)
-def query(request: QueryRequest) -> QueryResponse:
-    collection = get_collection()
+def query(request: QueryRequest, collection=Depends(get_collection)) -> QueryResponse:
     if collection.count() == 0:
         raise HTTPException(status_code=400, detail="向量库为空，请先调用 /ingest")
 
