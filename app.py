@@ -39,9 +39,13 @@ class HashEmbeddingFunction:
         return [self._embed(text) for text in input]
 
     def _embed(self, text: str) -> list[float]:
-        digest = hashlib.sha256(text.encode("utf-8")).digest()
-        values = [(byte - 127.5) / 127.5 for byte in digest]
-        return [values[index % len(values)] for index in range(self.dimension)]
+        values: list[float] = []
+        counter = 0
+        while len(values) < self.dimension:
+            digest = hashlib.sha256(f"{counter}:{text}".encode("utf-8")).digest()
+            values.extend((byte - 127.5) / 127.5 for byte in digest)
+            counter += 1
+        return values[: self.dimension]
 
 
 def build_embedding_function() -> object:
@@ -108,7 +112,7 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
     if overlap >= chunk_size:
         raise ValueError("overlap 必须小于 chunk_size")
 
-    step = max(chunk_size - overlap, 1)
+    step = chunk_size - overlap
     chunks: list[str] = []
     for start in range(0, len(text), step):
         chunk = text[start : start + chunk_size].strip()
@@ -167,7 +171,7 @@ def query(request: QueryRequest) -> QueryResponse:
     context = "\n\n".join(documents)
     prompt = RAG_PROMPT.format(context=context, question=request.query)
 
-    answer = f"相关内容：{documents[0]}" if documents else "未找到相关内容"
+    answer = f"相关内容：{' '.join(documents)}" if documents else "未找到相关内容"
 
     return QueryResponse(
         answer=answer,
