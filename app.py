@@ -28,19 +28,19 @@ DOCUMENTS_ROOT = Path(os.getenv("DOCUMENTS_ROOT", "documents")).resolve()
 COLLECTION_NAME = "knowledge_base"
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "sentence-transformers")
-EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "128"))
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
 
 _client = chromadb.PersistentClient(path=CHROMA_PATH)
 class HashEmbeddingFunction:
-    def __init__(self, dimension: int = EMBEDDING_DIM) -> None:
-        self.dimension = dimension
+    def __init__(self, dimension: int | None = None) -> None:
+        self.dimension = dimension or EMBEDDING_DIM
 
     def __call__(self, input: list[str]) -> list[list[float]]:
         return [self._embed(text) for text in input]
 
     def _embed(self, text: str) -> list[float]:
         digest = hashlib.sha256(text.encode("utf-8")).digest()
-        values = [(byte - 128) / 128 for byte in digest]
+        values = [(byte - 127.5) / 127.5 for byte in digest]
         return [values[index % len(values)] for index in range(self.dimension)]
 
 
@@ -58,10 +58,6 @@ _collection = _client.get_or_create_collection(
     embedding_function=_embedding_function,
     metadata={"hnsw:space": "cosine"},
 )
-
-
-class IngestRequest(BaseModel):
-    path: str = Field(..., description="文件或目录路径")
 
 
 class IngestResponse(BaseModel):
@@ -88,23 +84,7 @@ def _iter_files(path: Path) -> Iterable[Path]:
         yield from path.rglob(extension)
 
 
-def resolve_document_path(input_path: str) -> Path:
-    raw_path = Path(input_path)
-    if raw_path.is_absolute():
-        candidate = raw_path.resolve()
-    else:
-        candidate = (DOCUMENTS_ROOT / raw_path).resolve()
-
-    try:
-        candidate.relative_to(DOCUMENTS_ROOT)
-    except ValueError as exc:
-        raise ValueError(f"路径必须位于文档目录: {DOCUMENTS_ROOT}") from exc
-
-    return candidate
-
-
-def load_documents(input_path: str) -> list[dict]:
-    path = resolve_document_path(input_path)
+def load_documents(path: Path = DOCUMENTS_ROOT) -> list[dict]:
     if not path.exists():
         raise FileNotFoundError(f"路径不存在: {path}")
 
@@ -125,6 +105,8 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
         raise ValueError("chunk_size 必须大于 0")
     if overlap < 0:
         raise ValueError("overlap 不能小于 0")
+    if overlap >= chunk_size:
+        raise ValueError("overlap 必须小于 chunk_size")
 
     step = max(chunk_size - overlap, 1)
     chunks: list[str] = []
@@ -151,9 +133,9 @@ def chunk_documents(documents: list[dict]) -> list[dict]:
 
 
 @app.post("/ingest", response_model=IngestResponse)
-def ingest(request: IngestRequest) -> IngestResponse:
+def ingest() -> IngestResponse:
     try:
-        documents = load_documents(request.path)
+        documents = load_documents()
         chunked = chunk_documents(documents)
         _collection.add(
             ids=[chunk["id"] for chunk in chunked],
@@ -185,7 +167,7 @@ def query(request: QueryRequest) -> QueryResponse:
     context = "\n\n".join(documents)
     prompt = RAG_PROMPT.format(context=context, question=request.query)
 
-    answer = documents[0] if documents else "未找到相关内容"
+    answer = f"相关内容：{documents[0]}" if documents else "未找到相关内容"
 
     return QueryResponse(
         answer=answer,

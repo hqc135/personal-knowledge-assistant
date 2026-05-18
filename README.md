@@ -19,12 +19,10 @@ uvicorn app:app --reload --port 8000
 ### 写入文档
 
 ```bash
-curl -X POST http://localhost:8000/ingest \
-  -H "Content-Type: application/json" \
-  -d '{"path": "./documents"}'
+curl -X POST http://localhost:8000/ingest
 ```
 
-`path` 支持文件或目录，目录下会自动读取 `.txt` 和 `.md` 文件。默认文档根目录为 `./documents`，也可通过 `DOCUMENTS_ROOT` 环境变量指定文档根目录，`path` 需位于该目录下。
+服务会从文档根目录读取 `.txt` 和 `.md` 文件。默认文档根目录为 `./documents`，也可通过 `DOCUMENTS_ROOT` 环境变量指定。
 
 ### 查询
 
