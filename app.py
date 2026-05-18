@@ -30,7 +30,6 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM
 EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "sentence-transformers")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
 
-_client = chromadb.PersistentClient(path=CHROMA_PATH)
 class HashEmbeddingFunction:
     def __init__(self, dimension: int | None = None) -> None:
         self.dimension = dimension or EMBEDDING_DIM
@@ -48,7 +47,8 @@ class HashEmbeddingFunction:
         return values[: self.dimension]
 
 
-def build_embedding_function() -> object:
+def build_embedding_function(
+) -> HashEmbeddingFunction | embedding_functions.SentenceTransformerEmbeddingFunction:
     if EMBEDDING_BACKEND == "hash":
         return HashEmbeddingFunction()
     return embedding_functions.SentenceTransformerEmbeddingFunction(
@@ -57,6 +57,7 @@ def build_embedding_function() -> object:
 
 
 _embedding_function = build_embedding_function()
+_client = chromadb.PersistentClient(path=CHROMA_PATH)
 _collection = _client.get_or_create_collection(
     name=COLLECTION_NAME,
     embedding_function=_embedding_function,
@@ -75,7 +76,7 @@ class QueryRequest(BaseModel):
 
 
 class QueryResponse(BaseModel):
-    answer: str
+    retrieved_content: str
     prompt: str
     sources: list[str]
 
@@ -171,10 +172,12 @@ def query(request: QueryRequest) -> QueryResponse:
     context = "\n\n".join(documents)
     prompt = RAG_PROMPT.format(context=context, question=request.query)
 
-    answer = f"相关内容：{' '.join(documents)}" if documents else "未找到相关内容"
+    retrieved_content = (
+        f"相关内容：{' '.join(documents)}" if documents else "未找到相关内容"
+    )
 
     return QueryResponse(
-        answer=answer,
+        retrieved_content=retrieved_content,
         prompt=prompt,
         sources=sorted({source for source in sources if source}),
     )
