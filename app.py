@@ -7,6 +7,7 @@ import hashlib
 import os
 
 import chromadb
+from chromadb.utils import embedding_functions
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -23,12 +24,38 @@ RAG_PROMPT = """请使用以下上下文回答问题。
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
 CHROMA_PATH = os.getenv("CHROMA_PATH", "chroma_db")
+DOCUMENTS_ROOT = Path(os.getenv("DOCUMENTS_ROOT", "documents")).resolve()
 COLLECTION_NAME = "knowledge_base"
-EMBEDDING_DIM = 128
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "sentence-transformers")
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "128"))
 
 _client = chromadb.PersistentClient(path=CHROMA_PATH)
+class HashEmbeddingFunction:
+    def __init__(self, dimension: int = EMBEDDING_DIM) -> None:
+        self.dimension = dimension
+
+    def __call__(self, input: list[str]) -> list[list[float]]:
+        return [self._embed(text) for text in input]
+
+    def _embed(self, text: str) -> list[float]:
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        values = [(byte - 128) / 128 for byte in digest]
+        return [values[index % len(values)] for index in range(self.dimension)]
+
+
+def build_embedding_function() -> object:
+    if EMBEDDING_BACKEND == "hash":
+        return HashEmbeddingFunction()
+    return embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name=EMBEDDING_MODEL
+    )
+
+
+_embedding_function = build_embedding_function()
 _collection = _client.get_or_create_collection(
     name=COLLECTION_NAME,
+    embedding_function=_embedding_function,
     metadata={"hnsw:space": "cosine"},
 )
 
@@ -61,10 +88,25 @@ def _iter_files(path: Path) -> Iterable[Path]:
         yield from path.rglob(extension)
 
 
+def resolve_document_path(input_path: str) -> Path:
+    raw_path = Path(input_path)
+    if raw_path.is_absolute():
+        candidate = raw_path.resolve()
+    else:
+        candidate = (DOCUMENTS_ROOT / raw_path).resolve()
+
+    try:
+        candidate.relative_to(DOCUMENTS_ROOT)
+    except ValueError as exc:
+        raise ValueError(f"路径必须位于文档目录: {DOCUMENTS_ROOT}") from exc
+
+    return candidate
+
+
 def load_documents(input_path: str) -> list[dict]:
-    path = Path(input_path)
+    path = resolve_document_path(input_path)
     if not path.exists():
-        raise FileNotFoundError(f"路径不存在: {input_path}")
+        raise FileNotFoundError(f"路径不存在: {path}")
 
     documents: list[dict] = []
     for file_path in _iter_files(path):
@@ -108,26 +150,14 @@ def chunk_documents(documents: list[dict]) -> list[dict]:
     return chunked
 
 
-def embed_text(text: str, dimension: int = EMBEDDING_DIM) -> list[float]:
-    digest = hashlib.sha256(text.encode("utf-8")).digest()
-    values = [(byte - 128) / 128 for byte in digest]
-    return [values[index % len(values)] for index in range(dimension)]
-
-
-def embed_texts(texts: list[str]) -> list[list[float]]:
-    return [embed_text(text) for text in texts]
-
-
 @app.post("/ingest", response_model=IngestResponse)
 def ingest(request: IngestRequest) -> IngestResponse:
     try:
         documents = load_documents(request.path)
         chunked = chunk_documents(documents)
-        embeddings = embed_texts([chunk["content"] for chunk in chunked])
         _collection.add(
             ids=[chunk["id"] for chunk in chunked],
             documents=[chunk["content"] for chunk in chunked],
-            embeddings=embeddings,
             metadatas=[
                 {"source": chunk["source"], "chunk_index": chunk["chunk_index"]}
                 for chunk in chunked
@@ -144,9 +174,8 @@ def query(request: QueryRequest) -> QueryResponse:
     if _collection.count() == 0:
         raise HTTPException(status_code=400, detail="向量库为空，请先调用 /ingest")
 
-    query_embedding = embed_text(request.query)
     result = _collection.query(
-        query_embeddings=[query_embedding],
+        query_texts=[request.query],
         n_results=request.top_k,
         include=["documents", "metadatas"],
     )
@@ -156,8 +185,10 @@ def query(request: QueryRequest) -> QueryResponse:
     context = "\n\n".join(documents)
     prompt = RAG_PROMPT.format(context=context, question=request.query)
 
+    answer = documents[0] if documents else "未找到相关内容"
+
     return QueryResponse(
-        answer=prompt,
+        answer=answer,
         prompt=prompt,
         sources=sorted({source for source in sources if source}),
     )
