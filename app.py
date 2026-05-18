@@ -56,13 +56,20 @@ def build_embedding_function(
     )
 
 
-_embedding_function = build_embedding_function()
-_client = chromadb.PersistentClient(path=CHROMA_PATH)
-_collection = _client.get_or_create_collection(
-    name=COLLECTION_NAME,
-    embedding_function=_embedding_function,
-    metadata={"hnsw:space": "cosine"},
-)
+_client = None
+_collection = None
+
+
+def get_collection():
+    global _client, _collection
+    if _collection is None:
+        _client = chromadb.PersistentClient(path=CHROMA_PATH)
+        _collection = _client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            embedding_function=build_embedding_function(),
+            metadata={"hnsw:space": "cosine"},
+        )
+    return _collection
 
 
 class IngestResponse(BaseModel):
@@ -76,7 +83,7 @@ class QueryRequest(BaseModel):
 
 
 class QueryResponse(BaseModel):
-    retrieved_content: str
+    chunks: list[str]
     prompt: str
     sources: list[str]
 
@@ -114,8 +121,6 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
         raise ValueError("overlap 必须小于 chunk_size")
 
     step = chunk_size - overlap
-    if step <= 0:
-        raise ValueError("overlap 必须小于 chunk_size")
     chunks: list[str] = []
     for start in range(0, len(text), step):
         chunk = text[start : start + chunk_size].strip()
@@ -144,7 +149,8 @@ def ingest() -> IngestResponse:
     try:
         documents = load_documents()
         chunked = chunk_documents(documents)
-        _collection.add(
+        collection = get_collection()
+        collection.add(
             ids=[chunk["id"] for chunk in chunked],
             documents=[chunk["content"] for chunk in chunked],
             metadatas=[
@@ -160,10 +166,11 @@ def ingest() -> IngestResponse:
 
 @app.post("/query", response_model=QueryResponse)
 def query(request: QueryRequest) -> QueryResponse:
-    if _collection.count() == 0:
+    collection = get_collection()
+    if collection.count() == 0:
         raise HTTPException(status_code=400, detail="向量库为空，请先调用 /ingest")
 
-    result = _collection.query(
+    result = collection.query(
         query_texts=[request.query],
         n_results=request.top_k,
         include=["documents", "metadatas"],
@@ -174,10 +181,8 @@ def query(request: QueryRequest) -> QueryResponse:
     context = "\n\n".join(documents)
     prompt = RAG_PROMPT.format(context=context, question=request.query)
 
-    retrieved_content = f"相关内容：{context}" if context else "未找到相关内容"
-
     return QueryResponse(
-        retrieved_content=retrieved_content,
+        chunks=documents,
         prompt=prompt,
         sources=sorted({source for source in sources if source}),
     )

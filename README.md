@@ -32,6 +32,6 @@ curl -X POST http://localhost:8000/query \
   -d '{"query": "总结一下项目目标", "top_k": 3}'
 ```
 
-查询结果会返回 `prompt`（带模板的上下文）以及 `retrieved_content`（当前为检索片段拼接）。
+查询结果会返回 `prompt`（带模板的上下文）以及 `chunks`（检索片段列表）。
 
 如需调整向量数据目录，可设置 `CHROMA_PATH` 环境变量。默认使用 sentence-transformers 生成向量，如在离线环境测试，可将 `EMBEDDING_BACKEND` 设为 `hash`。
